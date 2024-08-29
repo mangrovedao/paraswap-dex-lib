@@ -499,6 +499,14 @@ export const Tokens: {
       address: '0x23878914efe38d27c4d67ab83ed1b93a74d4086a',
       decimals: 6,
     },
+    rUSD: {
+      address: '0x65D72AA8DA931F047169112fcf34f52DbaAE7D18',
+      decimals: 18,
+    },
+    arUSD: {
+      address: '0x07D1718fF05a8C53C8F05aDAEd57C0d672945f9a',
+      decimals: 18,
+    },
   },
   [Network.POLYGON]: {
     jGBP: {
@@ -1240,6 +1248,10 @@ export const Tokens: {
       address: '0x6ab707aca953edaefbc4fd23ba73294241490620',
       decimals: 6,
     },
+    GHO: {
+      address: '0x7dff72693f6a4149b17e7c6314655f6a9f7c8b33',
+      decimals: 18,
+    },
   },
   [Network.OPTIMISM]: {
     DAI: {
@@ -1373,6 +1385,10 @@ export const Tokens: {
     },
   },
   [Network.BASE]: {
+    wstETH: {
+      address: `0xc1cba3fcea344f92d9239c08c0568f6f2f0ee452`,
+      decimals: 18,
+    },
     PRIME: {
       address: '0xfA980cEd6895AC314E7dE34Ef1bFAE90a5AdD21b',
       decimals: 18,
@@ -1569,6 +1585,8 @@ export const Holders: {
     stataUSDT: '0x6803364AceD5181877abC11E865FB27cB654a426',
     aaveUSDT: '0x32c98a981Fe7C333Bd4e8E7630E8e0CF5ce20987',
     weETH: '0x267ed5f71EE47D3E45Bb1569Aa37889a2d10f91e',
+    rUSD: '0xEC2eda1C4F981E468ABF62424a10B69B738b498E',
+    arUSD: '0xeFc24206053a452e2299BF3b8f964512b041Db4C',
   },
   [Network.POLYGON]: {
     jGBP: '0x02aa0B826c7BA6386DdBE04C0a8715A1c0A16B24',
@@ -1745,6 +1763,7 @@ export const Holders: {
     stataUSDT: '0xc5042f9d9a18e95547864438455c8f05b4987399',
     aaveUSDT: '0xAfa788fab589fe61C23DF76905558f4734444D67',
     crvUSD: '0x9755e99bdb99495d3d31d953785d993c6df8552e',
+    GHO: '0xda39E48523770197EF3CbB70C1bf1cCCF9B4b1E7',
   },
   [Network.OPTIMISM]: {
     ETH: '0xF6D4E5a7c5215F91f59a95065190CCa24bf64554',
@@ -1788,7 +1807,7 @@ export const Holders: {
     PRIME: '0xe3879b7359695f802d6FD56Bb76fD82C362Dafd6',
     ETH: '0xd34ea7278e6bd48defe656bbe263aef11101469c',
     MAV: '0xf977814e90da44bfa03b6295a0616a897441acec',
-    USDC: '0xaac391f166f33cdaefaa4afa6616a3bea66b694d',
+    USDC: '0x21bD501F86A0B5cE0907651Df3368DA905B300A9',
     USDbC: '0x4bb6b2efe7036020ba6f02a05602546c9f25bf28',
     DAI: '0x20f03e26968b179025f65c1f4afadfd3959c8d03',
     BAL: '0x854b004700885a61107b458f11ecc169a019b764',
