@@ -1,0 +1,29 @@
+offerList returns:
+[0, --> next offer index
+ [1, 2, 3, 4, 5], --> offer index
+ [(0, 0, -197395, 2899102924800000000), --> offer info
+  (0, 0, -197394, 2899102924800000000),
+  (0, 0, -197393, 2899102924800000000),
+  (0, 0, -197392, 2899102924800000000),
+  (0, 0, -197391, 2899102924800000000)],
+ [('0x57d26b65fb1978A18754D4e417c13B207A687C13', 2000000, 250, 20), --> offer details see below
+  ('0x57d26b65fb1978A18754D4e417c13B207A687C13', 2000000, 250, 20),
+  ('0x57d26b65fb1978A18754D4e417c13B207A687C13', 2000000, 250, 20),
+  ('0x57d26b65fb1978A18754D4e417c13B207A687C13', 2000000, 250, 20),
+  ('0x57d26b65fb1978A18754D4e417c13B207A687C13', 2000000, 250, 20)]]
+
+struct OfferUnpacked {
+  uint prev;
+  uint next;
+  Tick tick;
+  uint gives;
+}
+
+struct OfferDetailUnpacked {
+  address maker;
+  uint gasreq;
+  uint kilo_offer_gasbase;
+  uint gasprice;
+}
+
+(uint, uint[] memory, OfferUnpacked[] memory, OfferDetailUnpacked[] memory)
