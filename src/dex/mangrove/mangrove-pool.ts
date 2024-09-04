@@ -1,3 +1,4 @@
+import _ from 'lodash';
 import { Interface } from '@ethersproject/abi';
 import { DeepReadonly } from 'ts-essentials';
 import { MultiCallParams } from '../../lib/multi-wrapper';
@@ -20,6 +21,7 @@ import { ethers } from 'ethers';
 import { Offer, OfferDetail } from './types';
 import BigNumber from 'bignumber.js';
 import { Pool } from '@hashflow/sdk/dist/modules/Pool';
+import { boolean } from 'joi';
 
 export const poolStateDecoder = (
   result: MultiResult<BytesLike> | BytesLike,
@@ -33,7 +35,7 @@ export const poolStateDecoder = (
   const res: PoolState = {
     blockNumber: 0,
     nextOffer: 0n,
-    offersIdx: [],
+    offersIds: [],
     offers: [],
     offersDetail: [],
   };
@@ -49,7 +51,7 @@ export const poolStateDecoder = (
     res,
     value => {
       res.nextOffer = value[0].toBigInt();
-      res.offersIdx = value[1].map((idx: BigNumber) => BigInt(idx.toString()));
+      res.offersIds = value[1].map((idx: BigNumber) => BigInt(idx.toString()));
       res.offers = value[2].map((row: BigNumber[]) => ({
         prev: BigInt(row[0].toString()),
         next: BigInt(row[1].toString()),
@@ -64,7 +66,6 @@ export const poolStateDecoder = (
           gasprice: BigInt(row[3].toString()),
         }),
       );
-
       return res;
     },
   );
@@ -74,9 +75,9 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
   handlers: {
     [event: string]: (
       event: any,
-      state: DeepReadonly<PoolState>,
+      state: PoolState,
       log: Readonly<Log>,
-    ) => DeepReadonly<PoolState> | null;
+    ) => PoolState | null;
   } = {};
 
   logDecoder: (log: Log) => any;
@@ -96,6 +97,12 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
 
   public initFailed = false;
   public initRetryAttemptCount = 0;
+
+  private depth: number;
+  private handler_state!: Record<
+    number,
+    { locked: boolean; offersTouched: Array<number> }
+  >;
 
   constructor(
     public parentName: string,
@@ -135,6 +142,9 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
       this.handledOfferFailWithPostHookData.bind(this);
     this.handlers['OrderStart'] = this.handleOrderStart.bind(this);
     this.handlers['OrderComplete'] = this.handleOrderComplete.bind(this);
+
+    this.depth = 0;
+    this.handler_state[this.depth] = { locked: false, offersTouched: [] };
   }
 
   async initialize(
@@ -164,7 +174,8 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     try {
       const event = this.logDecoder(log);
       if (event.name in this.handlers) {
-        return this.handlers[event.name](event, state, log);
+        const _state = _.cloneDeep(state) as PoolState;
+        return this.handlers[event.name](event, _state, log);
       }
     } catch (e) {
       catchParseLogError(e, this.logger);
@@ -223,74 +234,151 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
       return {
         blockNumber: blockNumber,
         nextOffer: 0n,
-        offersIdx: [],
+        offersIds: [],
         offers: [],
         offersDetail: [],
       };
     }
   }
 
-  handleOfferWrite(
-    event: any,
-    state: DeepReadonly<PoolState>,
-    log: Readonly<Log>,
-  ): DeepReadonly<PoolState> | null {
-    return null;
+  offerWrite(
+    state: PoolState,
+    offerId: bigint,
+    gives: bigint,
+    tick: bigint,
+    maker: string,
+    gasreq: bigint,
+    gasprice: bigint,
+  ) {
+    state.offersIds.push(offerId);
+    const offer = { next: 0n, prev: 0n, gives: gives, tick: tick };
+    state.offers.push(offer);
+
+    const offerDetail = {
+      maker: maker,
+      gasreq: gasreq,
+      kilo_offer_gasbase: 250n,
+      gasprice: gasprice,
+    };
+    state.offersDetail.push(offerDetail);
+    return state;
   }
 
-  handleOfferRetract(
-    event: any,
-    state: DeepReadonly<PoolState>,
-    log: Readonly<Log>,
-  ): DeepReadonly<PoolState> | null {
-    return null;
+  offerRetract(state: PoolState, offerId: number) {
+    // Are Ids always in order?
+    state.offersIds.splice(offerId, 1);
+    state.offers.splice(offerId, 1);
+    state.offersDetail.splice(offerId, 1);
+    return state;
   }
 
-  handleOfferSuccess(
-    event: any,
-    state: DeepReadonly<PoolState>,
-    log: Readonly<Log>,
-  ): DeepReadonly<PoolState> | null {
-    return null;
-  }
-
-  handleOfferSuccessWithPostHookData(
-    event: any,
-    state: DeepReadonly<PoolState>,
-    log: Readonly<Log>,
-  ): DeepReadonly<PoolState> | null {
-    return null;
-  }
-
-  handleOfferFail(
-    event: any,
-    state: DeepReadonly<PoolState>,
-    log: Readonly<Log>,
-  ): DeepReadonly<PoolState> | null {
-    return null;
-  }
-
-  handledOfferFailWithPostHookData(
-    event: any,
-    state: DeepReadonly<PoolState>,
-    log: Readonly<Log>,
-  ): DeepReadonly<PoolState> | null {
-    return null;
-  }
+  // Handlers
 
   handleOrderStart(
     event: any,
-    state: DeepReadonly<PoolState>,
+    state: PoolState,
     log: Readonly<Log>,
-  ): DeepReadonly<PoolState> | null {
-    return null;
+  ): PoolState | null {
+    this.depth++;
+    this.handler_state[this.depth] = { locked: true, offersTouched: [] };
+
+    return state;
   }
 
   handleOrderComplete(
     event: any,
-    state: DeepReadonly<PoolState>,
+    state: PoolState,
     log: Readonly<Log>,
-  ): DeepReadonly<PoolState> | null {
-    return null;
+  ): PoolState | null {
+    delete this.handler_state[this.depth];
+    this.depth--;
+    return state;
+  }
+
+  handleOfferWrite(
+    event: any,
+    state: PoolState,
+    log: Readonly<Log>,
+  ): PoolState | null {
+    const offerId = event.ofrId;
+    const maker = event.maker;
+    const tick = event.tick;
+    const gives = event.gives;
+    const gasprice = event.gasprice;
+    const gasreq = event.gasreq;
+
+    state = this.offerWrite(
+      state,
+      offerId,
+      gives,
+      tick,
+      maker,
+      gasreq,
+      gasprice,
+    );
+    if (this.handler_state[this.depth]?.locked)
+      this.handler_state[this.depth].offersTouched.push(offerId);
+    return state;
+  }
+
+  handleOfferRetract(
+    event: any,
+    state: PoolState,
+    log: Readonly<Log>,
+  ): PoolState | null {
+    const offerId = event.id;
+    state = this.offerRetract(state, offerId);
+
+    return state;
+  }
+
+  handleOfferSuccess(
+    event: any,
+    state: PoolState,
+    log: Readonly<Log>,
+  ): PoolState | null {
+    const offerId = event.id;
+
+    if (this.handler_state[this.depth].offersTouched.includes(offerId)) {
+      this.handler_state[this.depth].offersTouched.splice(offerId);
+      state = this.offerRetract(state, offerId);
+    } else state = this.offerRetract(state, offerId);
+
+    return state;
+  }
+
+  handleOfferFail(
+    event: any,
+    state: PoolState,
+    log: Readonly<Log>,
+  ): PoolState | null {
+    const offerId = event.id;
+
+    if (this.handler_state[this.depth].offersTouched.includes(offerId)) {
+      this.handler_state[this.depth].offersTouched.splice(offerId);
+      state = this.offerRetract(state, offerId);
+    } else state = this.offerRetract(state, offerId);
+
+    return state;
+  }
+
+  handleOfferSuccessWithPostHookData(
+    event: any,
+    state: PoolState,
+    log: Readonly<Log>,
+  ): PoolState | null {
+    const offerId = event.id;
+    state = this.offerRetract(state, offerId);
+    return state;
+  }
+
+  handledOfferFailWithPostHookData(
+    event: any,
+    state: PoolState,
+    log: Readonly<Log>,
+  ): PoolState | null {
+    const offerId = event.id;
+    state = this.offerRetract(state, offerId);
+    return state;
   }
 }

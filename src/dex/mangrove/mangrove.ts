@@ -381,8 +381,6 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
       return null;
     }
 
-    console.log(pool.olKey);
-
     const callData = amounts.map(amount => ({
       target: this.config.mangrove,
       gasLimit: 20000000, // TO DO

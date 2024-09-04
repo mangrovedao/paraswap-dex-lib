@@ -22,7 +22,7 @@ export type OfferDetail = {
 export type DecodedStateMultiCallResult = {
   blockNumber: number;
   nextOffer: bigint;
-  offersIdx: bigint[];
+  offersIds: bigint[];
   offers: Offer[];
   offersDetail: OfferDetail[];
 };
@@ -30,7 +30,7 @@ export type DecodedStateMultiCallResult = {
 export type PoolState = {
   blockNumber: number;
   nextOffer: bigint;
-  offersIdx: bigint[];
+  offersIds: bigint[];
   offers: Offer[];
   offersDetail: OfferDetail[];
 };
