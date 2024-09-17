@@ -55,8 +55,8 @@ export const poolStateDecoder = (
       res.offers = value[2].map((row: BigNumber[]) => ({
         prev: BigInt(row[0].toString()),
         next: BigInt(row[1].toString()),
-        gives: BigInt(row[2].toString()),
-        tick: BigInt(row[3].toString()),
+        tick: BigInt(row[2].toString()),
+        gives: BigInt(row[3].toString()),
       }));
       res.offersDetail = value[3].map(
         (row: [string, BigNumber, BigNumber, BigNumber]) => ({
@@ -144,7 +144,7 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     this.handlers['OrderComplete'] = this.handleOrderComplete.bind(this);
 
     this.depth = 0;
-    this.handler_state[this.depth] = { locked: false, offersTouched: [] };
+    this.handler_state = {};
   }
 
   async initialize(
@@ -155,8 +155,10 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
   }
 
   //olKey
-  protected getPoolIdentifierData() {
-    return [this.srcAddress, this.destAddress, this.tickSpacing];
+  public getPoolIdentifierData() {
+    // Very important the order destAddress, srcAddress. This is the only function
+    // where theseparams are inversed. All the other functions should call this one to get the pool.
+    return [this.destAddress, this.srcAddress, this.tickSpacing];
   }
   /**
    * The function is called every time any of the subscribed
@@ -213,7 +215,7 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
    * should be generated
    * @returns state of the event subscriber at blocknumber
    */
-  async generateState(blockNumber: number): Promise<DeepReadonly<PoolState>> {
+  async generateState(blockNumber: number): Promise<PoolState> {
     try {
       const callData = this._getStateRequestCallData();
       const [poolState] = await this.dexHelper.multiWrapper.tryAggregate<
@@ -230,7 +232,7 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
       // TO DO CHECK IF THERE ARE OFFERS assert(poolState.offers len > 1)
       return poolState.returnData as PoolState;
     } catch (error) {
-      console.error('Error occurred during tryAggregate:', error);
+      this.logger.error('Error occurred during tryAggregate:', error);
       return {
         blockNumber: blockNumber,
         nextOffer: 0n,
@@ -250,9 +252,15 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     gasreq: bigint,
     gasprice: bigint,
   ) {
+    // STILL TO DO, ADD OFFER AT THE RIGHT PLACE, IS IT NECESSARY?
     state.offersIds.push(offerId);
     const offer = { next: 0n, prev: 0n, gives: gives, tick: tick };
     state.offers.push(offer);
+    // state.offers.sort((a, b) => {
+    //   if (a.tick < b.tick) return -1;
+    //   if (a.tick > b.tick) return 1;
+    //   return 0;
+    // });
 
     const offerDetail = {
       maker: maker,
@@ -261,6 +269,7 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
       gasprice: gasprice,
     };
     state.offersDetail.push(offerDetail);
+
     return state;
   }
 

@@ -10,11 +10,12 @@ import {
   SimpleExchangeParam,
   PoolLiquidity,
   Logger,
+  DexExchangeParam,
 } from '../../types';
 import { SwapSide, Network } from '../../constants';
 import * as CALLDATA_GAS_COST from '../../calldata-gas-cost';
-import { getDexKeysWithNetwork, isTruthy, interpolate } from '../../utils';
-import { IDex } from '../../dex/idex';
+import { getDexKeysWithNetwork, getBigIntPow, interpolate } from '../../utils';
+import { Context, IDex } from '../../dex/idex';
 import { IDexHelper } from '../../dex-helper/idex-helper';
 import { MangroveData, PoolState } from './types';
 import { SimpleExchange } from '../simple-exchange';
@@ -24,6 +25,7 @@ import { OnPoolCreatedCallback, MangroveFactory } from './mangrove-factory';
 import { Pool } from '@hashflow/sdk/dist/modules/Pool';
 import MangroveMultiABI from '../../abi/mangrove/MangroveMulti.abi.json';
 import MangroveABI from '../../abi/mangrove/Mangrove.abi.json';
+import MangroveReader from '../../abi/mangrove/MangroveReader.abi.json';
 import { AbiItem } from 'web3-utils';
 import { Contract } from 'web3-eth-contract';
 import { generalDecoder } from '../../lib/decoders';
@@ -31,6 +33,9 @@ import { BytesLike } from 'ethers/lib/utils';
 import { extractSuccessAndValue } from '../../lib/decoders';
 import { assert } from 'ts-essentials';
 import { MultiResult } from '../../lib/multi-wrapper';
+import { BI_POWS } from '../../bigint-constants';
+import { read } from 'fs';
+
 // export type ExchangePrices<T> = PoolPrices<T>[];
 
 // export type PoolPrices<T> = {
@@ -51,6 +56,7 @@ export const mktOrderDecoder = (
     isSuccess && toDecode !== '0x',
     `mktOrderDecoder failed to get decodable result: ${result}`,
   );
+
   const mgvData: MangroveData = {
     path: {
       tokenIn: '',
@@ -59,7 +65,7 @@ export const mktOrderDecoder = (
     },
   };
   let poolPrices: PoolPrices<MangroveData> = {
-    prices: [0n],
+    prices: [0n, 0n],
     unit: 0n,
     data: mgvData,
     exchange: 'Mangrove',
@@ -68,18 +74,13 @@ export const mktOrderDecoder = (
 
   let res: ExchangePrices<MangroveData> = [];
 
-  return generalDecoder(
-    result,
-    ['uint256', 'uint256', 'uint256', 'uint256'],
-    res,
-    value => {
-      //takerGot, takerGave, bounty, feePaid
-      console.log(value);
-      poolPrices.prices[0] = value[0];
-      res.push(poolPrices);
-      return res;
-    },
-  );
+  return generalDecoder(result, ['uint256', 'uint256'], res, value => {
+    //takerGot, takerGave, totalGasReq
+    poolPrices.prices[0] = BigInt(value[0].toString());
+    poolPrices.prices[1] = BigInt(value[1].toString());
+    //res.push(poolPrices);
+    return res;
+  });
 };
 
 export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
@@ -107,6 +108,7 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
     protected adapters = Adapters[network] || {}, // TODO: add any additional optional params to support other fork DEXes
     protected config = MangroveConfig[dexKey][network],
     readonly mangroveIface = new Interface(MangroveABI),
+    readonly mgvReaderIface = new Interface(MangroveReader),
   ) {
     super(dexHelper, dexKey);
     this.logger = dexHelper.getLogger(dexKey);
@@ -151,7 +153,7 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
     destAddress: Address,
     tickSpacing: bigint = 1n,
   ) {
-    return `${this.dexKey}_${srcAddress}_${destAddress}${tickSpacing}`;
+    return `${this.dexKey}_${destAddress}_${srcAddress}${tickSpacing}`;
   }
 
   // Returns list of pool identifiers that can be used
@@ -189,7 +191,7 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
     srcAddress: Address,
     destAddress: Address,
     tickSpacing: bigint,
-    blockNumber: number,
+    blockNumber?: number,
   ): Promise<MangroveEventPool | null> {
     let pool = this.eventPools[
       this.getPoolIdentifier(srcAddress, destAddress, tickSpacing)
@@ -211,13 +213,16 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
       }
     }
 
-    let olKey = `${srcAddress}_${destAddress}_${tickSpacing}`.toLowerCase();
+    let olKey = `${destAddress}_${srcAddress}_${tickSpacing}`.toLowerCase();
 
     this.logger.trace(`starting to listen to new pool: ${olKey}`);
 
     pool = pool || this.getPoolInstance(srcAddress, destAddress, tickSpacing);
 
     try {
+      if (!blockNumber)
+        blockNumber = await this.dexHelper.web3Provider.eth.getBlockNumber();
+
       await pool.initialize(blockNumber);
     } catch (e) {
       if (e instanceof Error && e.message.endsWith('Pool does not exist')) {
@@ -251,6 +256,72 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
     ] = pool;
     return pool;
   }
+
+  protected prepareData(
+    srcAddress: string,
+    destAddress: string,
+    tickSpacing: bigint = 1n,
+  ): MangroveData {
+    return {
+      path: {
+        tokenIn: srcAddress,
+        tokenOut: destAddress,
+        tickSpacing: tickSpacing,
+      },
+    };
+  }
+
+  getMktPrice(state: DeepReadonly<PoolState>, amountIn: bigint): bigint {
+    // result has to be in units of destToken
+    // Function that goes through the orderbook until amountIn is 0
+    // see: https://docs.mangrove.exchange/developers/protocol/technical-references/tick-ratio
+
+    try {
+      let offers = [...state.offers].sort((a, b) => {
+        if (a.tick < b.tick) return -1;
+        if (a.tick > b.tick) return 1;
+        return 0;
+      });
+
+      let res: number = 0;
+      // reamining IN tokens to spend
+      let remainingQty: bigint = amountIn;
+      let offerIndex = 0;
+
+      while (remainingQty > 0) {
+        if (offerIndex == offers.length) {
+          this.logger.error(
+            `Not enough liquidity in pool for amount ${amountIn}`,
+          );
+          this.logger.log(
+            `Not enough liquidity in pool for amount ${amountIn}`,
+          );
+          return -1n;
+        }
+
+        let topOffer = offers[offerIndex];
+        let priceFromTick = 1.0001 ** Number(topOffer.tick);
+        let topOfferWants = Math.floor(priceFromTick * Number(topOffer.gives)); // TO DO: is floor ok here?
+
+        if (remainingQty < topOfferWants) {
+          res = Math.ceil(Number(remainingQty) / priceFromTick); // TO DO review this
+          remainingQty = 0n;
+          offerIndex += 1;
+        } else {
+          res += Math.ceil(Number(remainingQty) / priceFromTick);
+          remainingQty -= BigInt(topOfferWants);
+          offerIndex += 1;
+        }
+      }
+      return BigInt(res);
+    } catch (e) {
+      this.logger.debug(
+        `${this.dexKey}: received error in getMktPrice while calculating outputs`,
+        e,
+      );
+      return -1n;
+    }
+  }
   // Returns pool prices for amounts.
   // If limitPools is defined only pools in limitPools
   // should be used. If limitPools is undefined then
@@ -262,34 +333,71 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
     side: SwapSide,
     blockNumber: number,
   ): Promise<null | ExchangePrices<MangroveData>> {
-    // TODO: complete me!
-    // try {
-    //   const _srcToken = this.dexHelper.config.wrapETH(srcToken);
-    //   const _destToken = this.dexHelper.config.wrapETH(destToken);
+    try {
+      const _srcToken = this.dexHelper.config.wrapETH(srcToken);
+      const _destToken = this.dexHelper.config.wrapETH(destToken);
 
-    //   const _srcAddress = _srcToken.address.toLowerCase();
-    //   const _destAddress = _destToken.address.toLowerCase();
-    //   if (_srcAddress === _destAddress) return null;
-    //   let pool: MangroveEventPool | null;
+      const pool = await this.getPool(
+        _srcToken.address,
+        _destToken.address,
+        1n,
+      );
+      if (!pool) return null;
 
-    //   const poolIdentifier = this.getPoolIdentifier(_srcAddress, _destAddress, tickSpacing);
+      const state = pool.getState(blockNumber);
 
-    //   pool = await this.getPool(_srcAddress, _destAddress, tickSpacing, blockNumber);
-    //   if (pool === null) {
-    //     return null;
-    //   }
-    //   const state = pool.getState(blockNumber);
+      if (!state) return null;
 
-    //   return null;
-    // } catch (e) {
-    //   this.logger.error(
-    //     `Error_getPricesVolume ${srcToken.symbol || srcToken.address}, ${
-    //       destToken.symbol || destToken.address
-    //     }, ${side}:`,
-    //     e,
-    //   );
-    //   return null;
-    // }
+      const unitAmount = getBigIntPow(_srcToken.decimals);
+      const _amounts = [...amounts.slice(1)];
+
+      const result = _amounts.map(a => {
+        if (state.offers.length == 0) {
+          this.logger.trace(`pool has 0 liquidity`);
+          return null;
+        }
+
+        const unitResult = this.getMktPrice(state, unitAmount);
+
+        const priceResult = this.getMktPrice(state, a);
+
+        if (!unitResult || !priceResult) {
+          this.logger.debug('Prices or unit is not calculated');
+          return null;
+        }
+        let gasCost = 0; // TODO
+
+        return {
+          unit: unitResult,
+          prices: [priceResult],
+          data: this.prepareData(_destToken.address, _srcToken.address),
+          poolIdentifier: this.getPoolIdentifier(
+            _srcToken.address,
+            _destToken.address,
+          ),
+          exchange: this.dexKey,
+          gasCost: gasCost,
+          poolAddresses: undefined,
+        };
+      });
+
+      // const rpcResult = this.getPricingFromRpc(_srcToken, _destToken,
+      //    amounts); // WHAT TO DO WITH THIS?
+
+      const notNullResult = result.filter(
+        res => res !== null,
+      ) as ExchangePrices<MangroveData>;
+
+      return notNullResult;
+    } catch (e) {
+      this.logger.error(
+        `Error_getPricesVolume ${srcToken.symbol || srcToken.address}, ${
+          destToken.symbol || destToken.address
+        }`,
+        e,
+      );
+      return null;
+    }
     return null;
   }
 
@@ -364,36 +472,30 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
     );
   }
 
-  protected _sortTokens(srcAddress: Address, destAddress: Address) {
-    return [srcAddress, destAddress].sort((a, b) => (a < b ? -1 : 1));
-  }
-
   async getPricingFromRpc(
     srcToken: Token,
     destToken: Token,
     amounts: bigint[],
-    pool: MangroveEventPool,
     state?: PoolState,
-    max_tick: number = 887272,
-    fill_wants: boolean = false,
+    maxTick: number = 887272,
+    fillWants: boolean = false,
   ): Promise<ExchangePrices<MangroveData> | null> {
+    let pool = await this.getPool(srcToken.address, destToken.address, 1n);
+
     if (!pool) {
       return null;
     }
 
     const callData = amounts.map(amount => ({
-      target: this.config.mangrove,
+      target: this.config.reader,
       gasLimit: 20000000, // TO DO
-      callData: this.mangroveIface.encodeFunctionData('marketOrderByTick', [
-        pool.olKey,
-        max_tick,
-        amount,
-        fill_wants,
-      ]),
+      callData: this.mgvReaderIface.encodeFunctionData(
+        'simulateMarketOrderByTick((address, address, uint256), int256, uint256, bool)',
+        [pool?.getPoolIdentifierData(), maxTick, amount, fillWants],
+      ),
       decodeFunction: mktOrderDecoder,
     }));
 
-    let pricingResult: ExchangePrices<MangroveData> = [];
     const rpcResult = await this.dexHelper.multiWrapper.tryAggregate<
       ExchangePrices<MangroveData>
     >(
@@ -407,5 +509,38 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
     let res = rpcResult[0].success ? rpcResult[0].returnData : null;
 
     return res;
+  }
+
+  async getDexParam(
+    srcToken: string,
+    destToken: string,
+    srcAmount: string,
+    destAmount: string,
+    recipient: string,
+    data: MangroveData,
+    side: SwapSide,
+    context: Context,
+    executorAddress: string,
+    tickSpacing: bigint = 1n,
+    maxTick: number = 887272,
+    fillWants: boolean = false,
+  ): Promise<DexExchangeParam> {
+    const srcAddress = this.dexHelper.config.wrapETH(srcToken);
+    const destAddress = this.dexHelper.config.wrapETH(destToken);
+
+    const olkey = [destAddress, srcAddress, 1n]; // TO DO CHECK CORRECT ORDER
+
+    const exchangeData = this.mangroveIface.encodeFunctionData(
+      'mktOrderByTick',
+      [olkey, maxTick, srcAmount, fillWants],
+    );
+
+    return {
+      needWrapNative: this.needWrapNative,
+      dexFuncHasRecipient: false,
+      exchangeData,
+      targetExchange: this.config.mangrove,
+      returnAmountPos: 0,
+    };
   }
 }

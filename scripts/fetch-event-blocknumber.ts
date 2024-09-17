@@ -7,7 +7,7 @@ import { Network } from '../src/constants';
 import { Address } from '../src/types';
 import { generateConfig } from '../src/config';
 // TODO: Import correct ABI
-import ABI from '../src/abi/erc20.json';
+import ABI from '../src/abi/mangrove/Mangrove.abi.json';
 
 // This is a helper script to fetch blockNumbers where a certain
 // event was released by a certain contract
@@ -40,12 +40,22 @@ async function getBlockNumbersForEvents(
 }
 
 // TODO: Set your values here
-const network = Network.AVALANCHE;
-const eventNames = ['Transfer'];
-const address = '0xc0253c3cc6aa5ab407b5795a04c28fb063273894';
+const network = Network.ARBITRUM;
+const eventNames = [
+  'OrderStart',
+  'OrderComplete',
+  'OfferWrite',
+  'OfferRetract',
+  'OfferSuccess',
+  'OfferFail',
+  'OfferSuccessWithPostHookData',
+  'OfferFailWithPostHookData',
+];
+
+const address = '0x109d9CDFA4aC534354873EF634EF63C235F93f61';
 const provider = new StaticJsonRpcProvider(
   generateConfig(network).privateHttpProvider,
   network,
 );
 
-getBlockNumbersForEvents(address, ABI, eventNames, 0, 2000, provider);
+getBlockNumbersForEvents(address, ABI, eventNames, 0, 20000, provider);

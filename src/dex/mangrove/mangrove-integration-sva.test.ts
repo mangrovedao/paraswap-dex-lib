@@ -104,8 +104,8 @@ describe('Mangrove', function () {
 
     // TODO: Put here token Symbol to check against
     // Don't forget to update relevant tokens in constant-e2e.ts
-    const srcTokenSymbol = 'WETH'; // WETH
-    const destTokenSymbol = 'USDC'; // USDC
+    const srcTokenSymbol = 'USDT'; // WETH
+    const destTokenSymbol = 'WETH'; // USDC
 
     const amountsForSell = [0n, 100000000n, 200000000n];
 

@@ -13,6 +13,11 @@ import {
   checkConstantPoolPrices,
 } from '../../../tests/utils';
 import { Tokens } from '../../../tests/constants-e2e';
+import { MangroveEventPool } from './mangrove-pool';
+import { MangroveConfig } from './config';
+import { escape } from 'lodash';
+import { assert } from 'console';
+import { read } from 'fs';
 
 /*
   README
@@ -28,6 +33,24 @@ import { Tokens } from '../../../tests/constants-e2e';
 
   (This comment should be removed from the final implementation)
 */
+
+const network = Network.ARBITRUM;
+const srcTokenSymbol = 'USDT';
+const srcToken = Tokens[network][srcTokenSymbol];
+
+const destTokenSymbol = 'WETH';
+const destToken = Tokens[network][destTokenSymbol];
+
+const tickSpacing = 1n;
+
+console.log('----------------:');
+console.log('TEST PARAMETERS:');
+console.log(`Network : ${network}`);
+console.log(`srcTokenSymbol : ${srcTokenSymbol}`);
+console.log(`srcTokenDecimals : ${srcToken.decimals}`);
+console.log(`destTokenSymbol : ${destTokenSymbol}`);
+console.log(`destTokenDecimals : ${destToken.decimals}`);
+console.log('----------------:');
 
 function getReaderCalldata(
   exchangeAddress: string,
@@ -90,162 +113,164 @@ async function checkOnChainPricing(
   expect(prices).toEqual(expectedPrices);
 }
 
-async function testPricingOnNetwork(
-  mangrove: Mangrove,
-  network: Network,
-  dexKey: string,
-  blockNumber: number,
-  srcTokenSymbol: string,
-  destTokenSymbol: string,
-  side: SwapSide,
-  amounts: bigint[],
-  funcNameToCheck: string,
-) {
-  const networkTokens = Tokens[network];
-
-  const pools = await mangrove.getPoolIdentifiers(
-    networkTokens[srcTokenSymbol],
-    networkTokens[destTokenSymbol],
-    side,
-    blockNumber,
-  );
-  console.log(
-    `${srcTokenSymbol} <> ${destTokenSymbol} Pool Identifiers: `,
-    pools,
-  );
-
-  expect(pools.length).toBeGreaterThan(0);
-
-  const poolPrices = await mangrove.getPricesVolume(
-    networkTokens[srcTokenSymbol],
-    networkTokens[destTokenSymbol],
-    amounts,
-    side,
-    blockNumber,
-    pools,
-  );
-  console.log(
-    `${srcTokenSymbol} <> ${destTokenSymbol} Pool Prices: `,
-    poolPrices,
-  );
-
-  expect(poolPrices).not.toBeNull();
-  if (mangrove.hasConstantPriceLargeAmounts) {
-    checkConstantPoolPrices(poolPrices!, amounts, dexKey);
-  } else {
-    checkPoolPrices(poolPrices!, amounts, side, dexKey);
-  }
-
-  // Check if onchain pricing equals to calculated ones
-  await checkOnChainPricing(
-    mangrove,
-    funcNameToCheck,
-    blockNumber,
-    poolPrices![0].prices,
-    amounts,
-  );
-}
-
 describe('Mangrove', function () {
+  const dexHelper = new DummyDexHelper(network);
   const dexKey = 'Mangrove';
   let blockNumber: number;
   let mangrove: Mangrove;
 
+  beforeEach(async () => {
+    blockNumber = await dexHelper.web3Provider.eth.getBlockNumber();
+    mangrove = new Mangrove(network, dexKey, dexHelper);
+  });
+
   describe('Arbitrum', () => {
-    const network = Network.ARBITRUM;
-    const dexHelper = new DummyDexHelper(network);
+    it('getMktPrice : given a state does it price what its supposed to', async function () {
+      const testAmounts = [
+        1_000n * BI_POWS[srcToken.decimals],
+        5_000n * BI_POWS[srcToken.decimals],
+        10_000n * BI_POWS[srcToken.decimals],
+        100_000n * BI_POWS[srcToken.decimals],
+      ];
 
-    const tokens = Tokens[network];
+      let poolState = {
+        blockNumber: 0,
+        nextOffer: 0n,
+        offersIds: [1n, 2n, 3n, 4n, 5n],
+        offers: [
+          { prev: 0n, next: 0n, tick: -198785n, gives: 2899102924800000000n },
+          { prev: 0n, next: 0n, tick: -198783n, gives: 2899102924800000000n },
+          { prev: 0n, next: 0n, tick: -198781n, gives: 2899102924800000000n },
+          { prev: 0n, next: 0n, tick: -198780n, gives: 2899102924800000000n },
+          { prev: 0n, next: 0n, tick: -198778n, gives: 2899102924800000000n },
+        ],
+        offersDetail: [
+          {
+            maker: '0x57d26b65fb1978A18754D4e417c13B207A687C13',
+            gasreq: 2000000n,
+            kilo_offer_gasbase: 250n,
+            gasprice: 20n,
+          },
+          {
+            maker: '0x57d26b65fb1978A18754D4e417c13B207A687C13',
+            gasreq: 2000000n,
+            kilo_offer_gasbase: 250n,
+            gasprice: 20n,
+          },
+          {
+            maker: '0x57d26b65fb1978A18754D4e417c13B207A687C13',
+            gasreq: 2000000n,
+            kilo_offer_gasbase: 250n,
+            gasprice: 20n,
+          },
+          {
+            maker: '0x57d26b65fb1978A18754D4e417c13B207A687C13',
+            gasreq: 2000000n,
+            kilo_offer_gasbase: 250n,
+            gasprice: 20n,
+          },
+          {
+            maker: '0x57d26b65fb1978A18754D4e417c13B207A687C13',
+            gasreq: 2000000n,
+            kilo_offer_gasbase: 250n,
+            gasprice: 20n,
+          },
+        ],
+      };
 
-    // TODO: Put here token Symbol to check against
-    // Don't forget to update relevant tokens in constant-e2e.ts
-    const srcTokenSymbol = 'srcTokenSymbol';
-    const destTokenSymbol = 'destTokenSymbol';
+      let res = testAmounts.map(amount =>
+        mangrove.getMktPrice(poolState, amount),
+      );
 
-    const amountsForSell = [
-      0n,
-      1n * BI_POWS[tokens[srcTokenSymbol].decimals],
-      2n * BI_POWS[tokens[srcTokenSymbol].decimals],
-      3n * BI_POWS[tokens[srcTokenSymbol].decimals],
-      4n * BI_POWS[tokens[srcTokenSymbol].decimals],
-      5n * BI_POWS[tokens[srcTokenSymbol].decimals],
-      6n * BI_POWS[tokens[srcTokenSymbol].decimals],
-      7n * BI_POWS[tokens[srcTokenSymbol].decimals],
-      8n * BI_POWS[tokens[srcTokenSymbol].decimals],
-      9n * BI_POWS[tokens[srcTokenSymbol].decimals],
-      10n * BI_POWS[tokens[srcTokenSymbol].decimals],
-    ];
-
-    const amountsForBuy = [
-      0n,
-      1n * BI_POWS[tokens[destTokenSymbol].decimals],
-      2n * BI_POWS[tokens[destTokenSymbol].decimals],
-      3n * BI_POWS[tokens[destTokenSymbol].decimals],
-      4n * BI_POWS[tokens[destTokenSymbol].decimals],
-      5n * BI_POWS[tokens[destTokenSymbol].decimals],
-      6n * BI_POWS[tokens[destTokenSymbol].decimals],
-      7n * BI_POWS[tokens[destTokenSymbol].decimals],
-      8n * BI_POWS[tokens[destTokenSymbol].decimals],
-      9n * BI_POWS[tokens[destTokenSymbol].decimals],
-      10n * BI_POWS[tokens[destTokenSymbol].decimals],
-    ];
-
-    beforeAll(async () => {
-      blockNumber = await dexHelper.web3Provider.eth.getBlockNumber();
-      mangrove = new Mangrove(network, dexKey, dexHelper);
-      if (mangrove.initializePricing) {
-        await mangrove.initializePricing(blockNumber);
-      }
+      // Use sheet https://docs.google.com/spreadsheets/d/1KNON2hGNcRHfCztp5ickhJJU_0-nrRttfGp5AXy_P9g
+      assert(
+        res[0] == BigInt(429_231_149_261_737_000),
+        'Wrong price for first amount',
+      );
+      assert(
+        res[1] == BigInt(2_146_155_746_308_680_000),
+        'Wrong price for first amount',
+      );
+      assert(
+        res[2] == BigInt(4_292_032_892_694_490_000),
+        'Wrong price for first amount',
+      );
+      assert(res[3] == BigInt(-1), 'Wrong price for first amount');
     });
 
-    it('getPoolIdentifiers and getPricesVolume SELL', async function () {
-      await testPricingOnNetwork(
-        mangrove,
-        network,
-        dexKey,
+    it('getPoolState and getPricesVolume', async function () {
+      const pool = await mangrove.getPool(
+        srcToken.address,
+        destToken.address,
+        tickSpacing,
+      );
+      console.log(`Pool State at blockNumber ${blockNumber}: `);
+      console.log(pool?.getState(blockNumber));
+
+      const amounts = [
+        0n,
+        1_000n * BI_POWS[srcToken.decimals],
+        5_000n * BI_POWS[srcToken.decimals],
+        10_000n * BI_POWS[srcToken.decimals],
+        100_000n * BI_POWS[srcToken.decimals],
+      ];
+
+      const poolPricesBuy = await mangrove.getPricesVolume(
+        srcToken,
+        destToken,
+        amounts,
+        SwapSide.BUY, // side is not needed
         blockNumber,
-        srcTokenSymbol,
-        destTokenSymbol,
-        SwapSide.SELL,
-        amountsForSell,
-        '', // TODO: Put here proper function name to check pricing
       );
-    });
 
-    it('getPoolIdentifiers and getPricesVolume BUY', async function () {
-      await testPricingOnNetwork(
-        mangrove,
-        network,
-        dexKey,
+      const poolPricesSell = await mangrove.getPricesVolume(
+        srcToken,
+        destToken,
+        amounts,
+        SwapSide.SELL, // side is not needed
         blockNumber,
-        srcTokenSymbol,
-        destTokenSymbol,
-        SwapSide.BUY,
-        amountsForBuy,
-        '', // TODO: Put here proper function name to check pricing
+      );
+
+      assert(
+        poolPricesBuy?.at(0)?.prices[0] == poolPricesSell?.at(0)?.prices[0],
+        'Buy and Sell side are different',
+      );
+      assert(
+        poolPricesBuy?.at(0)?.prices[1] == poolPricesSell?.at(0)?.prices[1],
+        'Buy and Sell side are different',
+      );
+      assert(
+        poolPricesBuy?.at(0)?.prices[2] == poolPricesSell?.at(0)?.prices[2],
+        'Buy and Sell side are different',
+      );
+
+      console.log(`Pricing at ${blockNumber}: `);
+      console.log(
+        `${srcTokenSymbol} <> ${destTokenSymbol} Pool Prices: `,
+        poolPricesBuy,
       );
     });
 
-    it('getTopPoolsForToken', async function () {
-      // We have to check without calling initializePricing, because
-      // pool-tracker is not calling that function
-      const newMangrove = new Mangrove(network, dexKey, dexHelper);
-      if (newMangrove.updatePoolState) {
-        await newMangrove.updatePoolState();
-      }
-      const poolLiquidity = await newMangrove.getTopPoolsForToken(
-        tokens[srcTokenSymbol].address,
-        10,
-      );
-      console.log(`${srcTokenSymbol} Top Pools:`, poolLiquidity);
+    it('Compare RPC price vs Event based price', async function () {
+      const amountToCompare = 10_000n * BI_POWS[srcToken.decimals];
 
-      if (!newMangrove.hasConstantPriceLargeAmounts) {
-        checkPoolsLiquidity(
-          poolLiquidity,
-          Tokens[network][srcTokenSymbol].address,
-          dexKey,
-        );
-      }
+      const eventPrice = await mangrove.getPricesVolume(
+        srcToken,
+        destToken,
+        [amountToCompare],
+        SwapSide.BUY, // side is not needed
+        blockNumber,
+      );
+
+      console.log('eventPrice :');
+      console.log(eventPrice);
+
+      const rpcPrice = await mangrove.getPricingFromRpc(srcToken, destToken, [
+        amountToCompare,
+      ]);
+
+      console.log('rpcPrice :');
+      console.log(rpcPrice);
     });
   });
 });
