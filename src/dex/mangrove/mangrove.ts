@@ -65,22 +65,26 @@ export const mktOrderDecoder = (
     },
   };
   let poolPrices: PoolPrices<MangroveData> = {
-    prices: [0n, 0n],
+    prices: [0n],
     unit: 0n,
     data: mgvData,
     exchange: 'Mangrove',
-    gasCost: 0,
+    gasCost: [] as number[],
   };
 
   let res: ExchangePrices<MangroveData> = [];
 
-  return generalDecoder(result, ['uint256', 'uint256'], res, value => {
-    //takerGot, takerGave, totalGasReq
-    poolPrices.prices[0] = BigInt(value[0].toString());
-    poolPrices.prices[1] = BigInt(value[1].toString());
-    //res.push(poolPrices);
-    return res;
-  });
+  const abi = ['tuple(uint256,uint256,uint256)[]'];
+  const decodedResult = defaultAbiCoder.decode(abi, toDecode);
+  const lastTuple = decodedResult[0][decodedResult[0].length - 1];
+  //takerGot, takerGave, totalGasReq
+  const takerGot = BigInt(lastTuple[0].toString());
+  const takerGave = BigInt(lastTuple[1].toString());
+  const totalGasReq = BigInt(lastTuple[2].toString());
+  poolPrices.prices[0] = takerGot;
+  (poolPrices.gasCost as number[])[0] = Number(totalGasReq);
+
+  return [poolPrices];
 };
 
 export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
@@ -271,7 +275,11 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
     };
   }
 
-  getMktPrice(state: DeepReadonly<PoolState>, amountIn: bigint): bigint {
+  getMktPrice(
+    state: DeepReadonly<PoolState>,
+    amountIn: bigint,
+    fee: bigint = 2n,
+  ): [bigint, bigint] {
     // result has to be in units of destToken
     // Function that goes through the orderbook until amountIn is 0
     // see: https://docs.mangrove.exchange/developers/protocol/technical-references/tick-ratio
@@ -283,11 +291,12 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
         return 0;
       });
 
-      let res: number = 0;
+      let res: bigint = 0n;
       // reamining IN tokens to spend
       let remainingQty: bigint = amountIn;
       let offerIndex = 0;
-
+      let gasBase: bigint = state.offersDetail[0].kilo_offer_gasbase * 1000n; // same for all offers on market
+      let gasCost: bigint = 0n;
       while (remainingQty > 0) {
         if (offerIndex == offers.length) {
           this.logger.error(
@@ -296,30 +305,33 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
           this.logger.log(
             `Not enough liquidity in pool for amount ${amountIn}`,
           );
-          return -1n;
+          return [-1n, -1n];
         }
 
         let topOffer = offers[offerIndex];
         let priceFromTick = 1.0001 ** Number(topOffer.tick);
         let topOfferWants = Math.floor(priceFromTick * Number(topOffer.gives)); // TO DO: is floor ok here?
-
         if (remainingQty < topOfferWants) {
-          res = Math.ceil(Number(remainingQty) / priceFromTick); // TO DO review this
+          res += BigInt(Math.ceil(Number(remainingQty) / priceFromTick)); // TO DO review this
           remainingQty = 0n;
+          gasCost += state.offersDetail[offerIndex].gasreq;
           offerIndex += 1;
         } else {
-          res += Math.ceil(Number(remainingQty) / priceFromTick);
+          res += topOffer.gives;
           remainingQty -= BigInt(topOfferWants);
+          gasCost += state.offersDetail[offerIndex].gasreq;
           offerIndex += 1;
         }
       }
-      return BigInt(res);
+      const feePaid = (BigInt(res) * fee) / 10000n;
+      gasCost += gasBase * BigInt(offerIndex + 1);
+      return [BigInt(res) - feePaid, gasCost];
     } catch (e) {
       this.logger.debug(
         `${this.dexKey}: received error in getMktPrice while calculating outputs`,
         e,
       );
-      return -1n;
+      return [-1n, -1n];
     }
   }
   // Returns pool prices for amounts.
@@ -347,48 +359,45 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
       const state = pool.getState(blockNumber);
 
       if (!state) return null;
+      if (state.offers.length == 0) {
+        this.logger.trace(`pool has 0 liquidity`);
+        return null;
+      }
 
       const unitAmount = getBigIntPow(_srcToken.decimals);
-      const _amounts = [...amounts.slice(1)];
+      const unitResult = this.getMktPrice(state, unitAmount);
 
-      const result = _amounts.map(a => {
-        if (state.offers.length == 0) {
-          this.logger.trace(`pool has 0 liquidity`);
-          return null;
+      const prices: bigint[] = [];
+      const gasCosts: number[] = [];
+
+      for (const amount of amounts) {
+        if (amount === 0n) continue;
+        const [price, gasCost] = this.getMktPrice(state, amount);
+        if (price !== -1n && gasCost !== -1n) {
+          prices.push(price);
+          gasCosts.push(Number(gasCost));
         }
+      }
 
-        const unitResult = this.getMktPrice(state, unitAmount);
+      if (prices.length === 0 || gasCosts.length === 0) {
+        this.logger.debug('No valid prices or gas costs calculated');
+        return null;
+      }
 
-        const priceResult = this.getMktPrice(state, a);
-
-        if (!unitResult || !priceResult) {
-          this.logger.debug('Prices or unit is not calculated');
-          return null;
-        }
-        let gasCost = 0; // TODO
-
-        return {
-          unit: unitResult,
-          prices: [priceResult],
-          data: this.prepareData(_destToken.address, _srcToken.address),
+      return [
+        {
+          unit: unitResult[0],
+          prices,
+          data: this.prepareData(_srcToken.address, _destToken.address),
           poolIdentifier: this.getPoolIdentifier(
             _srcToken.address,
             _destToken.address,
           ),
           exchange: this.dexKey,
-          gasCost: gasCost,
+          gasCost: gasCosts,
           poolAddresses: undefined,
-        };
-      });
-
-      // const rpcResult = this.getPricingFromRpc(_srcToken, _destToken,
-      //    amounts); // WHAT TO DO WITH THIS?
-
-      const notNullResult = result.filter(
-        res => res !== null,
-      ) as ExchangePrices<MangroveData>;
-
-      return notNullResult;
+        },
+      ];
     } catch (e) {
       this.logger.error(
         `Error_getPricesVolume ${srcToken.symbol || srcToken.address}, ${
@@ -486,9 +495,10 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
       return null;
     }
 
-    const callData = amounts.map(amount => ({
+    const _amounts = amounts.filter(amount => amount > 0n);
+    const callData = _amounts.map(amount => ({
       target: this.config.reader,
-      gasLimit: 20000000, // TO DO
+      gasLimit: 20000000,
       callData: this.mgvReaderIface.encodeFunctionData(
         'simulateMarketOrderByTick((address, address, uint256), int256, uint256, bool)',
         [pool?.getPoolIdentifierData(), maxTick, amount, fillWants],
@@ -506,9 +516,36 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
       false,
     );
 
-    let res = rpcResult[0].success ? rpcResult[0].returnData : null;
+    const aggregatedResult: ExchangePrices<MangroveData> = [
+      {
+        prices: [],
+        unit: 0n,
+        data: { path: rpcResult[0].returnData[0].data.path },
+        exchange: 'Mangrove',
+        gasCost: [] as number[],
+      },
+    ];
 
-    return res;
+    rpcResult.forEach(result => {
+      if (result.success && result.returnData.length > 0) {
+        const data = result.returnData[0];
+        aggregatedResult[0].prices.push(...data.prices);
+        if (Array.isArray(aggregatedResult[0].gasCost)) {
+          aggregatedResult[0].gasCost.push(
+            ...(Array.isArray(data.gasCost) ? data.gasCost : [data.gasCost]),
+          );
+        } else {
+          aggregatedResult[0].gasCost = [
+            ...(Array.isArray(aggregatedResult[0].gasCost)
+              ? [aggregatedResult[0].gasCost]
+              : []),
+            ...(Array.isArray(data.gasCost) ? data.gasCost : [data.gasCost]),
+          ];
+        }
+      }
+    });
+
+    return aggregatedResult;
   }
 
   async getDexParam(
