@@ -12,39 +12,6 @@ import { MangroveConfig } from './config';
 import { Tick } from '../uniswap-v3/contract-math/Tick';
 import { Tokens } from '../../../tests/constants-e2e';
 
-/*
-  README
-  ======
-
-  This test script adds unit tests for Mangrove event based
-  system. This is done by fetching the state on-chain before the
-  event block, manually pushing the block logs to the event-subscriber,
-  comparing the local state with on-chain state.
-
-  Most of the logic for testing is abstracted by `testEventSubscriber`.
-  You need to do two things to make the tests work:
-
-  1. Fetch the block numbers where certain events were released. You
-  can modify the `./scripts/fetch-event-blocknumber.ts` to get the
-  block numbers for different events. Make sure to get sufficient
-  number of blockNumbers to cover all possible cases for the event
-  mutations.
-
-  2. Complete the implementation for fetchPoolState function. The
-  function should fetch the on-chain state of the event subscriber
-  using just the blocknumber.
-
-  The template tests only include the test for a single event
-  subscriber. There can be cases where multiple event subscribers
-  exist for a single DEX. In such cases additional tests should be
-  added.
-
-  You can run this individual test script by running:
-  `npx jest src/dex/<dex-name>/<dex-name>-events.test.ts`
-
-  (This comment should be removed from the final implementation)
-*/
-
 jest.setTimeout(50 * 1000);
 
 const dexKey = 'Mangrove';
@@ -57,9 +24,10 @@ async function fetchPoolState(
   poolAddress: string,
 ): Promise<PoolState> {
   const message = `Mangrove: ${poolAddress} blockNumber ${blockNumber}`;
-  console.log(`Fetching state ${message}`);
-  const state = mangrovePools.generateState(blockNumber);
-  console.log(`Done ${message}`);
+  // console.log(`Fetching state ${message}`);
+  const state = await mangrovePools.generateState(blockNumber);
+  //  console.log('state', state);
+  // console.log(`Done ${message}`);
   return state;
 }
 
@@ -68,39 +36,49 @@ type EventMappings = Record<string, number[]>;
 
 describe('Mangrove Event', function () {
   const networkTokens = Tokens[network];
-  const srcTokenSymbol = 'USDT'; // WETH
-  const destTokenSymbol = 'WETH'; // USDT
+  const srcTokenSymbol = 'WETH'; // WETH
+  const destTokenSymbol = 'USDT'; // USDT
   const poolAddress = '';
-  const token0 = networkTokens[srcTokenSymbol];
-  const token1 = networkTokens[destTokenSymbol];
+  const srcToken = networkTokens[srcTokenSymbol];
+  const destToken = networkTokens[destTokenSymbol];
   const tickSpacing = 1n;
 
   const blockNumbers: { [eventName: string]: number[] } = {
-    // topic0 - 0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67
-    // ['OrderStart']: [
-    //   249762602,
-    // ],
-    // topic0 - 0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c
-    // ['OrderComplete']: [
-    //   249762602,
-    // ],
-    // // topic0 - 0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde
-    ['OfferWrite']: [250004786],
-    // ['OfferRetract']: [
-    //   249762602,
-    // ],
-    // ['OfferSuccess']: [
-    //   249762602,
-    // ],
-    // ['OfferFail']: [
-    //   249762602,
-    // ],
-    // ['OfferSuccessWithPostHookData']: [
-    //   249762602,
-    // ],
-    // ['OfferFailWithPostHookData']: [
-    //   249762602,
-    // ],
+    //OrderStart topic 0x730e8e2cc287cd5296445ccef0dcf7f0695d8b3d620dcc9dd19c671a6f5663a5
+    ['OrderStart']: [255085839, 255086573],
+    // //OrderComplete topic 0xeab9f920eda38e2e10cfc76b3f85201b8bbe82fac69de4c4509001b66e5e33af
+    ['OrderComplete']: [255085839, 255086573],
+    //     //OfferWrite topic 0xbeb2dc87c4db0b489fe0485121086dfff34fcaac67b1120861b95f1b6649c97b
+    ['OfferWrite']: [
+      254937505, 254939376, 254939623, 254939698, 254940129, 254940345,
+      254940370, 254940491, 254940629, 254941221,
+    ],
+    // //OfferRetract topic 0x69a8c809e58310d1995905640ab3d1e8efe2ca772c21432a693da69912a478f1
+    ['OfferRetract']: [254938197],
+
+    // //OfferSuccess topic 0x5575d7d7c01adb4eeee1e2ec4a63652fdf5086d71fd325fa1af8034796b89904
+    ['OfferSuccess']: [255085839, 255086573],
+    // //OfferFail topic 0x8e83cc09450b5666c4b273f69ceff6631efac5291f291422fdc1e6e6c9223e19
+    ['OfferFail']: [
+      254937505, 254939376, 254939623, 254939698, 254940129, 254940345,
+      254940370, 254940491, 254940629, 254941221, 254941236, 254946257,
+      254946974, 254947058, 254947241, 254947511, 254947709, 254949019,
+      254949034, 254949128, 254949451, 254949676, 254949885, 254952953,
+      254952987, 254953315, 254953714, 254954287, 254954705, 254955218,
+      254955417, 254955459, 254955543, 254955717, 254955793, 254956058,
+      254956081, 254956942, 254956957, 254958236, 254958337, 254959449,
+      254959776, 254959878, 254959937, 254960068, 254960225, 254960439,
+      254960463, 254960496, 254960882, 254960951, 254960967, 254960983,
+      254961495, 254961537, 254961645, 254961679, 254961692, 254961741,
+      254961756, 254961806, 254961873, 254961888, 254961912, 254962006,
+      254962047, 254963144, 254963194, 254963236, 254963251, 254963420,
+      254963435, 254963493, 254963526, 254963980, 254964438, 254964716,
+      254964869, 254964885, 254964976, 254965026, 254965504, 254965573,
+      254965806, 254966106, 254966141, 254966218, 254966277, 254966301,
+      254966482, 254966497,
+    ],
+    ['OfferSuccessWithPostHookData']: [249762602],
+    ['OfferFailWithPostHookData']: [249762602],
   };
 
   describe('Mangrove EventPool', function () {
@@ -114,33 +92,22 @@ describe('Mangrove Event', function () {
             dexHelper,
             config.factory,
             config.reader,
-            token0.address,
-            token1.address,
+            config.mangrove,
+            srcToken.address,
+            destToken.address,
             tickSpacing,
             logger,
           );
-          blockNumber = await dexHelper.web3Provider.eth.getBlockNumber();
-          blockNumber = 250004787;
 
-          let state_before = await mangrovePool.generateState(blockNumber - 1);
-          console.log('State Before:');
-          console.log(state_before);
-          let state_after = await mangrovePool.generateState(blockNumber);
-          console.log('State on block:');
-          console.log(state_after);
-          let state_after_after = await mangrovePool.generateState(
-            blockNumber + 1,
-          );
-          console.log('State on block + 1:');
-          console.log(state_after_after);
+          const cacheKey = `${dexKey}_${mangrovePool.getPoolIdentifierData()}`;
 
           await testEventSubscriber(
             mangrovePool,
             [config.factory, config.reader], // just an address, not really important I think?
             (_blockNumber: number) =>
-              fetchPoolState(mangrovePool, _blockNumber, poolAddress),
+              fetchPoolState(mangrovePool, _blockNumber, cacheKey),
             blockNumber,
-            `${dexKey}_${poolAddress}`,
+            cacheKey,
             dexHelper.provider,
           );
         });

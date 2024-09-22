@@ -3,25 +3,25 @@ import { Interface } from '@ethersproject/abi';
 import { DeepReadonly } from 'ts-essentials';
 import { MultiCallParams } from '../../lib/multi-wrapper';
 import { Log, Logger, Address } from '../../types';
-import { catchParseLogError } from '../../utils';
+import { catchParseLogError, bigIntify } from '../../utils';
 import {
   InitializeStateOptions,
   StatefulEventSubscriber,
 } from '../../stateful-event-subscriber';
 import { IDexHelper } from '../../dex-helper/idex-helper';
-import { OlKey, PoolState, DecodedStateMultiCallResult } from './types';
+import { PoolState, DecodedStateMultiCallResult } from './types';
 import MangroveReaderABI from '../../abi/mangrove/MangroveReader.abi.json';
 import { generalDecoder } from '../../lib/decoders';
 import { MultiResult } from '../../lib/multi-wrapper';
-import { BytesLike, defaultAbiCoder } from 'ethers/lib/utils';
-import { AbiItem } from 'web3-utils';
+import { BytesLike, AbiCoder } from 'ethers/lib/utils';
+import { keccak256 } from 'web3-utils';
+
 import { extractSuccessAndValue } from '../../lib/decoders';
 import { assert } from 'ts-essentials';
-import { ethers } from 'ethers';
-import { Offer, OfferDetail } from './types';
+
 import BigNumber from 'bignumber.js';
-import { Pool } from '@hashflow/sdk/dist/modules/Pool';
-import { boolean } from 'joi';
+
+import MangroveABI from '../../abi/mangrove/Mangrove.abi.json';
 
 export const poolStateDecoder = (
   result: MultiResult<BytesLike> | BytesLike,
@@ -87,13 +87,14 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
   readonly srcAddress: Address; //outbound_tkn
   readonly destAddress: Address; //inbound_tkn
   readonly tickSpacing: bigint;
-  readonly olKey: [Address, Address, bigint];
 
+  private _poolAddress?: Address;
   protected _stateRequestCallData?: MultiCallParams<
     bigint | DecodedStateMultiCallResult
   >[];
 
   public readonly readerIface = new Interface(MangroveReaderABI);
+  public readonly mangroveIface = new Interface(MangroveABI);
 
   public initFailed = false;
   public initRetryAttemptCount = 0;
@@ -109,10 +110,10 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     protected dexHelper: IDexHelper,
     protected readonly factoryAddress: Address,
     protected readonly readerAddress: Address,
+    protected readonly mangroveAddress: Address,
     srcAddress: Address,
     destAddress: Address,
     tickSpacing: bigint,
-
     logger: Logger,
     //protected mangroveIface? = new Interface(
     //  '' /* TODO: Import and put here Mangrove ABI */,
@@ -123,13 +124,10 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     this.srcAddress = srcAddress.toLowerCase();
     this.destAddress = destAddress.toLowerCase();
     this.tickSpacing = tickSpacing;
-    this.olKey = [srcAddress, destAddress, tickSpacing];
 
     // TODO: make logDecoder decode logs that
-    this.logDecoder = (log: Log) => this.readerIface.parseLog(log);
-    this.addressesSubscribed = [
-      /* subscribed addresses */
-    ];
+    this.logDecoder = (log: Log) => this.mangroveIface.parseLog(log);
+    this.addressesSubscribed = [this.mangroveAddress];
 
     // Add handlers
     this.handlers['OfferWrite'] = this.handleOfferWrite.bind(this);
@@ -155,10 +153,19 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
   }
 
   //olKey
-  public getPoolIdentifierData() {
+  public getPoolIdentifierData(): [Address, Address, bigint] {
     // Very important the order destAddress, srcAddress. This is the only function
     // where theseparams are inversed. All the other functions should call this one to get the pool.
     return [this.destAddress, this.srcAddress, this.tickSpacing];
+  }
+
+  public getOLKeyHash(olKey: [Address, Address, bigint]) {
+    const abiCoder = new AbiCoder();
+    const encodedData = abiCoder.encode(
+      ['address', 'address', 'uint256'],
+      [olKey[0], olKey[1], olKey[2]],
+    );
+    return keccak256(encodedData);
   }
   /**
    * The function is called every time any of the subscribed
@@ -175,9 +182,20 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
   ): DeepReadonly<PoolState> | null {
     try {
       const event = this.logDecoder(log);
-      if (event.name in this.handlers) {
+      const olKeyHash = this.getOLKeyHash(this.getPoolIdentifierData());
+
+      if (event.name in this.handlers && event.args.olKeyHash === olKeyHash) {
+        // console.log('event', event);
+        // console.log('state before', state);
         const _state = _.cloneDeep(state) as PoolState;
-        return this.handlers[event.name](event, _state, log);
+        const res = this.handlers[event.name](event, _state, log);
+        if (res) res.blockNumber = log.blockNumber;
+        // console.log('state after', res);
+        return res;
+      } else {
+        const _state = _.cloneDeep(state) as PoolState;
+        _state.blockNumber = log.blockNumber;
+        return _state;
       }
     } catch (e) {
       catchParseLogError(e, this.logger);
@@ -230,7 +248,9 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
       assert(poolState.success, 'Pool does not exist');
 
       // TO DO CHECK IF THERE ARE OFFERS assert(poolState.offers len > 1)
-      return poolState.returnData as PoolState;
+      const res = poolState.returnData as PoolState;
+      res.blockNumber = blockNumber;
+      return res;
     } catch (error) {
       this.logger.error('Error occurred during tryAggregate:', error);
       return {
@@ -252,24 +272,37 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     gasreq: bigint,
     gasprice: bigint,
   ) {
-    // STILL TO DO, ADD OFFER AT THE RIGHT PLACE, IS IT NECESSARY?
-    state.offersIds.push(offerId);
-    const offer = { next: 0n, prev: 0n, gives: gives, tick: tick };
-    state.offers.push(offer);
-    // state.offers.sort((a, b) => {
-    //   if (a.tick < b.tick) return -1;
-    //   if (a.tick > b.tick) return 1;
-    //   return 0;
-    // });
+    // Check if an offer with the same ID already exists
+    const existingIndex = state.offersIds.findIndex(id => id === offerId);
 
+    if (existingIndex !== -1) {
+      // Remove the existing offer
+      state.offersIds.splice(existingIndex, 1);
+      state.offers.splice(existingIndex, 1);
+      state.offersDetail.splice(existingIndex, 1);
+    }
+    // Create new offer and offerDetail
+    const offer = { next: 0n, prev: 0n, tick: tick, gives: gives };
     const offerDetail = {
       maker: maker,
       gasreq: gasreq,
       kilo_offer_gasbase: 250n,
       gasprice: gasprice,
     };
-    state.offersDetail.push(offerDetail);
+    // Find the correct position to insert the new offer
+    const insertIndex = state.offers.findIndex(o => o.tick > tick);
 
+    if (insertIndex === -1) {
+      // If no offer with higher tick found, append to the end
+      state.offers.push(offer);
+      state.offersDetail.push(offerDetail);
+      state.offersIds.push(offerId);
+    } else {
+      // Insert at the correct position
+      state.offers.splice(insertIndex, 0, offer);
+      state.offersDetail.splice(insertIndex, 0, offerDetail);
+      state.offersIds.splice(insertIndex, 0, offerId);
+    }
     return state;
   }
 
@@ -290,7 +323,6 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
   ): PoolState | null {
     this.depth++;
     this.handler_state[this.depth] = { locked: true, offersTouched: [] };
-
     return state;
   }
 
@@ -309,12 +341,12 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     state: PoolState,
     log: Readonly<Log>,
   ): PoolState | null {
-    const offerId = event.ofrId;
-    const maker = event.maker;
-    const tick = event.tick;
-    const gives = event.gives;
-    const gasprice = event.gasprice;
-    const gasreq = event.gasreq;
+    const offerId = bigIntify(event.args.id);
+    const maker = event.args.maker;
+    const tick = bigIntify(event.args.tick);
+    const gives = bigIntify(event.args.gives);
+    const gasprice = bigIntify(event.args.gasprice);
+    const gasreq = bigIntify(event.args.gasreq);
 
     state = this.offerWrite(
       state,
@@ -326,7 +358,7 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
       gasprice,
     );
     if (this.handler_state[this.depth]?.locked)
-      this.handler_state[this.depth].offersTouched.push(offerId);
+      this.handler_state[this.depth].offersTouched.push(Number(offerId));
     return state;
   }
 
@@ -337,7 +369,6 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
   ): PoolState | null {
     const offerId = event.id;
     state = this.offerRetract(state, offerId);
-
     return state;
   }
 
@@ -346,12 +377,14 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     state: PoolState,
     log: Readonly<Log>,
   ): PoolState | null {
-    const offerId = event.id;
+    const offerId = bigIntify(event.args.id);
 
-    if (this.handler_state[this.depth].offersTouched.includes(offerId)) {
-      this.handler_state[this.depth].offersTouched.splice(offerId);
-      state = this.offerRetract(state, offerId);
-    } else state = this.offerRetract(state, offerId);
+    if (
+      this.handler_state[this.depth].offersTouched.includes(Number(offerId))
+    ) {
+      this.handler_state[this.depth].offersTouched.splice(Number(offerId));
+      //state = this.offerRetract(state, Number(offerId)); // TO DO ASK MAXENCE IF THIS SHOULD BE LIKE THIS
+    } //else state = this.offerRetract(state, Number(offerId));
 
     return state;
   }
@@ -361,13 +394,21 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     state: PoolState,
     log: Readonly<Log>,
   ): PoolState | null {
-    const offerId = event.id;
+    const offerId = bigIntify(event.args.id);
 
-    if (this.handler_state[this.depth].offersTouched.includes(offerId)) {
-      this.handler_state[this.depth].offersTouched.splice(offerId);
-      state = this.offerRetract(state, offerId);
-    } else state = this.offerRetract(state, offerId);
-
+    // Check if this.handler_state[this.depth] exists
+    if (this.handler_state[this.depth]) {
+      if (
+        this.handler_state[this.depth].offersTouched.includes(Number(offerId))
+      ) {
+        this.handler_state[this.depth].offersTouched = this.handler_state[
+          this.depth
+        ].offersTouched.filter(id => id !== Number(offerId));
+        state = this.offerRetract(state, Number(offerId));
+      } else {
+        state = this.offerRetract(state, Number(offerId));
+      }
+    }
     return state;
   }
 
@@ -376,8 +417,8 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     state: PoolState,
     log: Readonly<Log>,
   ): PoolState | null {
-    const offerId = event.id;
-    state = this.offerRetract(state, offerId);
+    const offerId = bigIntify(event.args.id);
+    state = this.offerRetract(state, Number(offerId));
     return state;
   }
 
@@ -386,8 +427,8 @@ export class MangroveEventPool extends StatefulEventSubscriber<PoolState> {
     state: PoolState,
     log: Readonly<Log>,
   ): PoolState | null {
-    const offerId = event.id;
-    state = this.offerRetract(state, offerId);
+    const offerId = bigIntify(event.args.id);
+    state = this.offerRetract(state, Number(offerId));
     return state;
   }
 }

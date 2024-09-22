@@ -184,6 +184,7 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
       this.dexHelper,
       this.config.factory,
       this.config.reader,
+      this.config.mangrove,
       srcAddress,
       destAddress,
       tickSpacing,
