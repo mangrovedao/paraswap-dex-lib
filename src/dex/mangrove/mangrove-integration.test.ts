@@ -7,13 +7,10 @@ import { DummyDexHelper } from '../../dex-helper/index';
 import { Network, SwapSide } from '../../constants';
 import { BI_POWS } from '../../bigint-constants';
 import { Mangrove } from './mangrove';
-import {
-  checkPoolPrices,
-  checkPoolsLiquidity,
-  checkConstantPoolPrices,
-} from '../../../tests/utils';
-import { Tokens } from '../../../tests/constants-e2e';
+
 import { OLKey } from './types';
+import { Tokens } from '../../../tests/constants-e2e';
+import { checkConstantPoolPrices, checkPoolPrices } from '../../../tests/utils';
 
 /*
   README
@@ -38,7 +35,7 @@ function getReaderCalldata(
 ) {
   return amounts.map(amount => ({
     target: exchangeAddress,
-    callData: readerIface.encodeFunctionData("simulateMarketOrderByTick", [
+    callData: readerIface.encodeFunctionData('simulateMarketOrderByTick', [
       [olKey.outboundtoken, olKey.inboundtoken, olKey.tickSpacing],
       Mangrove.MAX_TICK,
       amount,
@@ -47,13 +44,13 @@ function getReaderCalldata(
   }));
 }
 
-function decodeReaderResult(
-  results: Result,
-  readerIface: Interface,
-) {
+function decodeReaderResult(results: Result, readerIface: Interface) {
   // TODO: Adapt this function for your needs
   return results.map(result => {
-    const parsed = readerIface.decodeFunctionResult("simulateMarketOrderByTick", result);
+    const parsed = readerIface.decodeFunctionResult(
+      'simulateMarketOrderByTick',
+      result,
+    );
     return BigInt(parsed.at(0)?.at(-1)?.totalGot?._hex || 0);
   });
 }
@@ -130,7 +127,6 @@ async function testPricingOnNetwork(
     poolPrices,
   );
 
-
   if (side === SwapSide.SELL) {
     expect(poolPrices).not.toBeNull();
   } else {
@@ -198,11 +194,9 @@ describe('Mangrove', function () {
       10n * BI_POWS[tokens[destTokenSymbol].decimals],
     ];
 
-
-
     beforeAll(async () => {
       blockNumber = await dexHelper.web3Provider.eth.getBlockNumber();
-      console.log("blockNumber", blockNumber);
+      console.log('blockNumber', blockNumber);
       mangrove = new Mangrove(network, dexKey, dexHelper);
       const openMarkets = await mangrove.getOpenMarkets();
       // console.log('Open Markets:', openMarkets);

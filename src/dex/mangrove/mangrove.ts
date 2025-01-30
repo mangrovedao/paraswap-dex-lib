@@ -8,6 +8,7 @@ import {
   SimpleExchangeParam,
   PoolLiquidity,
   Logger,
+  DexExchangeParam,
 } from '../../types';
 import { SwapSide, Network } from '../../constants';
 import * as CALLDATA_GAS_COST from '../../calldata-gas-cost';
@@ -22,10 +23,10 @@ import MgvReader from '../../abi/mangrove/MgvReader.json';
 
 import { Interface } from '@ethersproject/abi';
 import { BigNumber } from 'ethers';
+import { NumberAsString } from '@paraswap/core';
+import { OptimizedBalancerV1Data } from '../balancer-v1/types';
 
-export class Mangrove
-  extends SimpleExchange
-  implements IDex<MangroveData> {
+export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
   readonly hasConstantPriceLargeAmounts = false;
   readonly needWrapNative = true;
   readonly isFeeOnTransferSupported = false;
@@ -59,7 +60,8 @@ export class Mangrove
   }
 
   static toOlKey(poolIdentifier: string) {
-    const [, outboundtoken, inboundtoken, tickSpacing] = poolIdentifier.split('_');
+    const [, outboundtoken, inboundtoken, tickSpacing] =
+      poolIdentifier.split('_');
     return {
       outboundtoken,
       inboundtoken,
@@ -75,11 +77,18 @@ export class Mangrove
   }
 
   async getOpenMarkets() {
-    const result = await this.dexHelper.multiContract.methods.aggregate([{
-      target: this.readerAddress,
-      callData: Mangrove.mgvReaderIface.encodeFunctionData('openMarkets'),
-    }]).call();
-    const unformatted = Mangrove.mgvReaderIface.decodeFunctionResult('openMarkets', result.returnData[0]);
+    const result = await this.dexHelper.multiContract.methods
+      .aggregate([
+        {
+          target: this.readerAddress,
+          callData: Mangrove.mgvReaderIface.encodeFunctionData('openMarkets'),
+        },
+      ])
+      .call();
+    const unformatted = Mangrove.mgvReaderIface.decodeFunctionResult(
+      'openMarkets',
+      result.returnData[0],
+    );
     const markets: SingleMarket[] = [];
     for (let i = 0; i < unformatted[0].length; i++) {
       const unformattedMarket = unformatted[0][i];
@@ -92,12 +101,18 @@ export class Mangrove
         config01: {
           fee: (unformattedMarketConfig01.fee as BigNumber).toBigInt(),
           active: unformattedMarketConfig01.active,
-          gasbase: (unformattedMarketConfig01.kilo_offer_gasbase as BigNumber).toBigInt() * 1_000n,
+          gasbase:
+            (
+              unformattedMarketConfig01.kilo_offer_gasbase as BigNumber
+            ).toBigInt() * 1_000n,
         },
         config10: {
           fee: (unformattedMarketConfig10.fee as BigNumber).toBigInt(),
           active: unformattedMarketConfig10.active,
-          gasbase: (unformattedMarketConfig10.kilo_offer_gasbase as BigNumber).toBigInt() * 1_000n,
+          gasbase:
+            (
+              unformattedMarketConfig10.kilo_offer_gasbase as BigNumber
+            ).toBigInt() * 1_000n,
         },
       };
       markets.push(market);
@@ -127,8 +142,10 @@ export class Mangrove
 
     const markets = openMarkets.filter(market => {
       if (!market.config01.active || !market.config10.active) return false;
-      return market.tkn0 === _srcAddress && market.tkn1 === _destAddress ||
-        market.tkn0 === _destAddress && market.tkn1 === _srcAddress;
+      return (
+        (market.tkn0 === _srcAddress && market.tkn1 === _destAddress) ||
+        (market.tkn0 === _destAddress && market.tkn1 === _srcAddress)
+      );
     });
 
     return markets.map(market => {
@@ -148,7 +165,6 @@ export class Mangrove
     blockNumber: number,
     limitPools?: string[],
   ): Promise<null | ExchangePrices<MangroveData>> {
-
     // mangrove is applying fee on the bought token
     // buy ~ exact amount out which is going to be unprecise.
     if (side === SwapSide.BUY) return null;
@@ -160,38 +176,42 @@ export class Mangrove
     const _destAddress = _destToken.address.toLowerCase();
 
     // since we are selling here only, the unit volume is going to be the src token decimals
-    const unitVolume = getBigIntPow(
-      _srcToken.decimals,
-    );
+    const unitVolume = getBigIntPow(_srcToken.decimals);
 
     if (limitPools) {
-      olKeys.push(...limitPools.map(pool => {
-        const [, outboundtoken, inboundtoken, tickSpacing] = pool.split('_');
-        return {
-          outboundtoken,
-          inboundtoken,
-          tickSpacing: BigInt(tickSpacing),
-        } as OLKey;
-      }));
+      olKeys.push(
+        ...limitPools.map(pool => {
+          const [, outboundtoken, inboundtoken, tickSpacing] = pool.split('_');
+          return {
+            outboundtoken,
+            inboundtoken,
+            tickSpacing: BigInt(tickSpacing),
+          } as OLKey;
+        }),
+      );
     } else {
       const openMarkets = await this.getOpenMarkets();
       const markets = openMarkets.filter(market => {
-        return market.tkn0 === _srcAddress && market.tkn1 === _destAddress ||
-          market.tkn0 === _destAddress && market.tkn1 === _srcAddress;
+        return (
+          (market.tkn0 === _srcAddress && market.tkn1 === _destAddress) ||
+          (market.tkn0 === _destAddress && market.tkn1 === _srcAddress)
+        );
       });
-      olKeys.push(...markets.map(market => {
-        return {
-          outboundtoken: market.tkn0,
-          inboundtoken: market.tkn1,
-          tickSpacing: market.tickSpacing,
-        } as OLKey;
-      }));
+      olKeys.push(
+        ...markets.map(market => {
+          return {
+            outboundtoken: market.tkn0,
+            inboundtoken: market.tkn1,
+            tickSpacing: market.tickSpacing,
+          } as OLKey;
+        }),
+      );
     }
 
-    const outAmounts = await this._getOutAmounts(olKeys, [unitVolume, ...amounts]);
-    return outAmounts.map((outAmount) => {
+    const outAmounts = await this._getOutAmounts(olKeys, [...amounts]);
+    return outAmounts.map(outAmount => {
       return {
-        prices: outAmount.received.slice(1),
+        prices: outAmount.received,
         unit: outAmount.received[0],
         exchange: this.dexKey,
         data: {
@@ -207,35 +227,51 @@ export class Mangrove
   async _getOutAmounts(
     olKeys: OLKey[],
     amounts: bigint[],
-  ): Promise<{ sent: bigint[]; received: bigint[]; gasCost: bigint[]; olKey: OLKey }[]> {
-
+  ): Promise<
+    { sent: bigint[]; received: bigint[]; gasCost: bigint[]; olKey: OLKey }[]
+  > {
     const calls = olKeys.flatMap(olKey => {
       return amounts.map(amount => ({
         target: this.readerAddress,
-        callData: Mangrove.mgvReaderIface.encodeFunctionData('simulateMarketOrderByTick', [
-          [olKey.outboundtoken, olKey.inboundtoken, olKey.tickSpacing],
-          Mangrove.MAX_TICK, // maxTick - use maximum possible tick
-          amount,
-          false // fillWants = false since we're selling exact input amount
-        ]),
+        callData: Mangrove.mgvReaderIface.encodeFunctionData(
+          'simulateMarketOrderByTick',
+          [
+            [olKey.outboundtoken, olKey.inboundtoken, olKey.tickSpacing],
+            Mangrove.MAX_TICK, // maxTick - use maximum possible tick
+            amount,
+            false, // fillWants = false since we're selling exact input amount
+          ],
+        ),
       }));
     });
 
-    const rawResult = await this.dexHelper.multiContract.methods.aggregate(calls).call();
+    const rawResult = await this.dexHelper.multiContract.methods
+      .aggregate(calls)
+      .call();
 
-    const decoded: { received: bigint; gasCost: bigint }[] = rawResult.returnData.map((data: any) => {
-      const decodedData = Mangrove.mgvReaderIface.decodeFunctionResult('simulateMarketOrderByTick', data).at(0)
-      const nOffers = decodedData?.length || 0;
-      const finalData = decodedData?.at(-1);
-      if (!finalData) return { received: 0n, gasCost: 0n };
-      return {
-        received: (finalData.totalGot as BigNumber).toBigInt(),
-        gasCost: (finalData.totalGasreq as BigNumber).toBigInt() + 250_000n * BigInt(nOffers),
-      }
-    });
+    const decoded: { received: bigint; gasCost: bigint }[] =
+      rawResult.returnData.map((data: any) => {
+        const decodedData = Mangrove.mgvReaderIface
+          .decodeFunctionResult('simulateMarketOrderByTick', data)
+          .at(0);
+        const nOffers = decodedData?.length || 0;
+        const finalData = decodedData?.at(-1);
+        if (!finalData) return { received: 0n, gasCost: 0n };
+        return {
+          received: (finalData.totalGot as BigNumber).toBigInt(),
+          gasCost:
+            (finalData.totalGasreq as BigNumber).toBigInt() +
+            250_000n * BigInt(nOffers),
+        };
+      });
 
     // Group results by olKey
-    const result: { sent: bigint[]; received: bigint[]; gasCost: bigint[]; olKey: OLKey }[] = [];
+    const result: {
+      sent: bigint[];
+      received: bigint[];
+      gasCost: bigint[];
+      olKey: OLKey;
+    }[] = [];
     for (let olKeyIndex = 0; olKeyIndex < olKeys.length; olKeyIndex++) {
       const sentAmounts: bigint[] = [];
       const receivedAmounts: bigint[] = [];
@@ -252,7 +288,7 @@ export class Mangrove
         sent: sentAmounts,
         received: receivedAmounts,
         gasCost: gasCosts,
-        olKey: olKeys[olKeyIndex]
+        olKey: olKeys[olKeyIndex],
       });
     }
 
@@ -260,9 +296,7 @@ export class Mangrove
   }
 
   // Returns estimated gas cost of calldata for this DEX in multiSwap
-  getCalldataGasCost(
-    poolPrices: PoolPrices<MangroveData>,
-  ): number | number[] {
+  getCalldataGasCost(poolPrices: PoolPrices<MangroveData>): number | number[] {
     return (
       CALLDATA_GAS_COST.DEX_NO_PAYLOAD +
       CALLDATA_GAS_COST.FUNCTION_SELECTOR +
@@ -272,7 +306,7 @@ export class Mangrove
       CALLDATA_GAS_COST.FULL_WORD + // maxTick
       CALLDATA_GAS_COST.AMOUNT + // amount
       CALLDATA_GAS_COST.BOOL // fillWants
-    )
+    );
   }
 
   // Encode params required by the exchange adapter
@@ -322,5 +356,23 @@ export class Mangrove
   // you need to release for graceful shutdown. For example, it may be any interval timer
   releaseResources(): AsyncOrSync<void> {
     // TODO: complete me!
+  }
+  getDexParam(
+    srcToken: Address,
+    destToken: Address,
+    srcAmount: NumberAsString,
+    destAmount: NumberAsString,
+    recipient: Address,
+    data: any,
+    side: SwapSide,
+  ): DexExchangeParam {
+    const exchangeData = '';
+    return {
+      exchangeData,
+      needWrapNative: this.needWrapNative,
+      dexFuncHasRecipient: false,
+      targetExchange: this.mangroveAddress,
+      returnAmountPos: undefined,
+    };
   }
 }
