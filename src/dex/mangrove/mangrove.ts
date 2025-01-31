@@ -357,6 +357,7 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
   releaseResources(): AsyncOrSync<void> {
     // TODO: complete me!
   }
+
   getDexParam(
     srcToken: Address,
     destToken: Address,
@@ -366,7 +367,10 @@ export class Mangrove extends SimpleExchange implements IDex<MangroveData> {
     data: any,
     side: SwapSide,
   ): DexExchangeParam {
-    const exchangeData = '';
+    const exchangeData = Mangrove.mangroveIface.encodeFunctionData(
+      'marketOrderByVolume',
+      [[destToken, srcToken, 1], destAmount, srcAmount, false],
+    );
     return {
       exchangeData,
       needWrapNative: this.needWrapNative,
